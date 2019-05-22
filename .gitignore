@@ -1,2 +1,13 @@
+# compiled
+pip-wheel-metadata/
+__pycache__/
+*.egg-info/
+*.py[co]
+
 # IDE
 .vscode
+
+# misc
+.DS_Store
+[._]tmp/
+.env
