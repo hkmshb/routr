@@ -1,5 +1,5 @@
-from route import __version__
+from route import get_version
 
 
 def test_version():
-    assert __version__ == '0.1.0'
+    assert get_version() == '0.1.0'

@@ -1,9 +1,12 @@
 import os
 import enum
 import logging
+import requests
 import threading
-from . import exceptions as exc
+from furl import furl
+from contextlib import contextmanager
 from dotenv import find_dotenv, load_dotenv
+from . import exceptions as exc
 
 
 log = logging.getLogger(__name__)
@@ -11,6 +14,17 @@ __all__ = [
     "EnumMixin", "OSRMProfile", "OSRMService", "OSRMClient",
     "get_client", "config"
 ]
+
+
+# singleton instances: thread-local
+__threadlocal = threading.local()
+
+
+class AttrDict(dict):
+    def __getattr__(self, key):
+        if key in self:
+            return self[key]
+        return None
 
 
 class EnumMixin:
@@ -22,7 +36,9 @@ class EnumMixin:
             return cls[value]
         if value in [c.value for c in cls]:
             return cls(value)
-        raise ValueError(f"Invalid value provided for {cls}")
+
+        errmsg = f"Invalid value provided for {cls.__name__}: {value}"
+        raise ValueError(errmsg)
 
 
 class APIClient:
@@ -77,13 +93,13 @@ class APIClient:
         )
 
 
-class OSRMProfile(enum.Enum, EnumMixin):
+class OSRMProfile(EnumMixin, enum.Enum):
     BIKE = "bike"
     CAR  = "car"
     FOOT = "foot"
 
 
-class OSRMService(enum.Enum, EnumMixin):
+class OSRMService(EnumMixin, enum.Enum):
     ROUTE = "route"
     MATCH = "match"
     NEAREST = "nearest"
@@ -98,9 +114,12 @@ class OSRMClient(APIClient):
     SERVICE_NAME="OSRM"
     REQUIRED_PAYLOAD_ENTRIES=("coordinates",)
 
-    def __init__(self, urlbase, service=None, version="v1", profile=OSRMProfile.CAR):
-        super().__init__(urlbase, apikey=None)
-        self.service = OSRMService.resolve(service)
+    def __init__(
+        self, urlbase, apikey=None, service=None,
+        version="v1", profile=OSRMProfile.CAR
+    ):
+        super().__init__(urlbase, apikey=apikey)
+        self.service = OSRMService.resolve(service or "route")
         self.profile = OSRMProfile.resolve(profile)
         self.version = version or "v1"
 
@@ -125,8 +144,9 @@ class OSRMClient(APIClient):
 
         return super()._build_url(urlpath, **params)
 
-    def __enter__(self, service, profile):
-        return self.__class__(self.urlbase, service, profile=profile)
+    @contextmanager
+    def for_(self, service, profile):
+        yield self.__class__(self.urlbase, service, profile=profile)
 
 
 def load_config():
@@ -142,11 +162,21 @@ def load_config():
     load_dotenv(find_dotenv())
 
     # read in all ENV VARS that begin with "ROUTE__"
-    config = {
+    config = AttrDict({
         norm(key): value
         for (key, value) in os.environ.items()
         if key.startswith("ROUTE__")
-    }
+    })
+
+    # refine configs namespaced to provides service name so they become the
+    # default configs (by dropping the service name)...
+    service_tag = f"{config.service.upper()}."
+    for key in config.keys():
+        if key.upper().startswith(service_tag):
+            # drop service name in key
+            config[key[len(service_tag):]] = config[key]
+            del config[key]
+
     setattr(__threadlocal, "config", config)
 
 
@@ -167,14 +197,11 @@ def get_client():
     thread-local then returned.
     """
     if not hasattr(__threadlocal, "client"):
+        config = get_config()
+
         service = config.get("engine", "OSRM")
         client_cls = OSRMClient if service == "OSRM" else APIClient
         client = client_cls(config.urlbase, config.apikey)
         setattr(__threadlocal, "client", client)
 
     return __threadlocal.client
-
-
-## singleton instances
-# thread-local
-__threadlocal = threading.local()
